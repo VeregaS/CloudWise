@@ -3,53 +3,74 @@ import aiohttp
 import sqlite3
 from geopy.geocoders import Nominatim
 from datetime import datetime, timedelta
-from pprint import pprint
 
 
-async def data_write(data, data_len):
+# Функция отвечает за запись данных погоды в базу данных
+async def data_write(data: list, data_len: int) -> None:
     conn = sqlite3.connect("data.db")
     cursor = conn.cursor()
+    cursor.execute('DELETE FROM main') # очищаю базу данных для новых значений данного города
     for i in range(data_len):
         cursor.executemany("""
-        INSERT INTO main (Date, T_min, T_max, T_day)
-        VALUES (?, ?, ?, ?)""", [data[i]])
+        INSERT INTO main (Date, T_min, T_max, T_day, T_app, W_speed, Rel_hum)
+        VALUES (?, ?, ?, ?, ?, ?, ?)""", [data[i]]) # записываю новые данные
     conn.commit()
     cursor.close()
     conn.close()
 
 
-async def get_weather(city):
+# получает информацию о погоде в городе
+async def get_weather(city: str) -> None:
     geolocator = Nominatim(user_agent="geoapi")
+
     async with aiohttp.ClientSession() as session:
         link = "https://archive-api.open-meteo.com/v1/archive"
         location = geolocator.geocode(city)
-        time_now = datetime.now() - timedelta(days=5)
-        time_30_ago = time_now - timedelta(days=30)
+        time_now = datetime.now() - timedelta(days=3) # вычитаю 3 дня на всякий для случая если не будет информации за прошлый/позапрошлый день
+        time_30_ago = time_now - timedelta(days=30) # получаю дату на 30 дней до этой
         params = {
             "latitude": location.latitude,
             "longitude": location.longitude,
             "start_date": time_30_ago.strftime("%Y-%m-%d"),
             "end_date": time_now.strftime("%Y-%m-%d"),
-            "daily": ["temperature_2m_max", "temperature_2m_min"],
-            "hourly": ["temperature_2m"],
+            "daily": ["temperature_2m_max", "temperature_2m_min"], # запрашиваем дневную информацию о максимальной и минимальной температуре
+            "hourly": ["temperature_2m", "apparent_temperature", 
+                       "wind_speed_10m", "relative_humidity_2m"], # запрашиваем часовую информацию о действ.температуре, чувств.температуре, скорости ветра и влажности
             "timezone": "Europe/Moscow"
         }
+
         async with session.get(link, params=params) as resp:
             output = await resp.json()
             data = []
+
             for i in range(31):
                 date = output['daily']['time'][i]
                 t_min = output['daily']['temperature_2m_min'][i]
                 t_max = output['daily']['temperature_2m_max'][i]
-                t_day = []
+                t_day, t_app_day, w_speed_day, rel_humid_day = [], [], [], []
+
                 for j in range(24):
-                    t_hour = output['hourly']['time'][j + i * 24]
-                    if date in t_hour:
+                    day_hour = output['hourly']['time'][j + i * 24]
+                    if date in day_hour:
                         t_hour = output['hourly']['temperature_2m'][j + i * 24]
+                        t_app_hour = output['hourly']['apparent_temperature'][j + i * 24]
+                        w_speed_hour = output['hourly']['wind_speed_10m'][j + i * 24]
+                        rel_humid_hour = output['hourly']['relative_humidity_2m'][j + i * 24]
                         t_day.append(t_hour)
-                data.append([date, t_min, t_max, str(t_day)])
-            await data_write(data, len(data))
+                        t_app_day.append(t_app_hour)
+                        w_speed_day.append(w_speed_hour)
+                        rel_humid_day.append(rel_humid_hour)
+
+                data.append([date, t_min, t_max, str(t_day), str(t_app_day), str(w_speed_day), str(rel_humid_day)])
+
+            return data
+
+
+async def main():
+    city = 'Moscow'
+    data = await get_weather(city)
+    await data_write(data, len(data))
 
 
 if __name__ == "__main__":
-    asyncio.run(get_weather('Moscow'))
+    asyncio.run(main())
